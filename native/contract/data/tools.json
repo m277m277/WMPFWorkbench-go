@@ -1,0 +1,417 @@
+[
+  {
+    "name": "search_mini_programs",
+    "description": "在线搜索收录的微信小程序/小游戏，返回 appid 供查询详情或独立启动使用。\n\n    source=online 使用当前登录账号在线搜索；local 查询本机缓存。limit 为本次结果裁剪，\n    不是服务端应用分页大小。名称不包含关键词的服务端结果会明确标记。\n    注意：launch 要求该 appid 本地已有包，或用 path 指定已存在的包文件；\n    在线搜索命中的 appid 不保证能直接独立启动。\n    ",
+    "inputSchema": {
+      "properties": {
+        "keyword": {
+          "title": "Keyword",
+          "type": "string"
+        },
+        "limit": {
+          "default": 30,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "source": {
+          "default": "online",
+          "enum": [
+            "online",
+            "local"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "title": "search_mini_programsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_app_detail",
+    "description": "单个 appid 的本地全貌：包清单 + 本地态 + 图标路径 + 明文材料计数与基础库名称。\n\n    只返回摘要，不落盘；需要工程源码请用 decrypt_wxapkg。\n    ",
+    "inputSchema": {
+      "properties": {
+        "appid": {
+          "title": "Appid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "appid"
+      ],
+      "title": "get_app_detailArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "launch",
+    "description": "独立启动；hide_window 省略时继承桌面设置，显式 true/false 可覆盖。\n\n    预检（不落任何会话目录）：appid 必须已在本地有包，或用 path 指定已存在的包文件；\n    seconds 限 60–1800；同一时刻只允许一个活动会话（含端口占用检查）。\n    -10 是间歇性认证拒绝（隐藏模式下偶发概率略高）：程序会自动刷新账号票据、\n    强制拉取新票据并重试一次；仍失败时可关闭 hide_window 再试。\n    ",
+    "inputSchema": {
+      "properties": {
+        "appid": {
+          "title": "Appid",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "seconds": {
+          "default": 1800,
+          "title": "Seconds",
+          "type": "integer"
+        },
+        "hide_window": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hide Window"
+        }
+      },
+      "required": [
+        "appid"
+      ],
+      "title": "launchArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "close_runtime",
+    "description": "关闭指定自产宿主会话，等待观测器清理它创建的进程。\n\n    会话不存在或仍在清理时返回 ok=false + reason，不抛异常；已终态的会话关闭后从列表移除。\n    ",
+    "inputSchema": {
+      "properties": {
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "close_runtimeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "login_status",
+    "description": "当前选择账号的公开信息；不返回 Cookie、令牌或登录票据。",
+    "inputSchema": {
+      "properties": {},
+      "title": "login_statusArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_local_targets",
+    "description": "默认发现自产会话调试桥；传入 HTTP base 则使用标准 Chromium 发现接口。",
+    "inputSchema": {
+      "properties": {
+        "base": {
+          "default": "",
+          "title": "Base",
+          "type": "string"
+        }
+      },
+      "title": "cdp_local_targetsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_connect",
+    "description": "连接 CDP 目标并缓存会话；重连会关闭上一次连接。\n\n    默认 base=ws://127.0.0.1:62000 直连自产宿主调试桥。target_substr 仅在\n    base 为 HTTP 发现地址（如 http://127.0.0.1:9222）时生效；默认参数下无效。\n    ",
+    "inputSchema": {
+      "properties": {
+        "target_substr": {
+          "default": "",
+          "title": "Target Substr",
+          "type": "string"
+        },
+        "base": {
+          "default": "ws://127.0.0.1:62000",
+          "title": "Base",
+          "type": "string"
+        }
+      },
+      "title": "cdp_connectArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_evaluate",
+    "description": "在已连接目标求值，返回 CDP Runtime.evaluate 原始结果（returnByValue=true）。\n\n    expression 需为单条 JS 表达式；多条语句请包成 IIFE。游戏/小程序的业务上下文在\n    iframe 里，先取 document.querySelectorAll('iframe')[0].contentWindow 再访问\n    wx / GameGlobal。异步事件（console、Network）不随本工具返回，请用 cdp_events 读取。\n    ",
+    "inputSchema": {
+      "properties": {
+        "expression": {
+          "title": "Expression",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "title": "cdp_evaluateArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_send",
+    "description": "原生 CDP 透传；Page.getFrameTree 因引擎已确认缺陷被明确拒绝。\n\n    异步事件不随命令返回，请用 cdp_events 读取；读取前需先经本工具显式\n    发送对应域的 *.enable（如 Runtime.enable / Network.enable）。\n    ",
+    "inputSchema": {
+      "properties": {
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "params_json": {
+          "default": "{}",
+          "title": "Params Json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "title": "cdp_sendArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_events",
+    "description": "增量读取 CDP 事件，不消费缓存。method_filter 为方法名或 Network.* 等域前缀列表。\n\n    since 省略从最早保留事件读；now 立即返回当前游标，之后传 next_cursor 续读。\n    游标绑定本次连接，重连失效；更换过滤条件需从适当的旧游标重读。\n    limit=1..200，wait_ms=0..3000，max_bytes=2048..40000 限制完整 JSON 响应。\n    gap/missed_events 表示缓存淘汰缺口，truncated 表示事件被裁剪。\n    先通过 cdp_send 显式 Runtime.enable/Network.enable；只返回目标实际发出的事件。\n    ",
+    "inputSchema": {
+      "properties": {
+        "method_filter": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Method Filter"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "since": {
+          "default": "",
+          "title": "Since",
+          "type": "string"
+        },
+        "wait_ms": {
+          "default": 0,
+          "title": "Wait Ms",
+          "type": "integer"
+        },
+        "max_bytes": {
+          "default": 32000,
+          "title": "Max Bytes",
+          "type": "integer"
+        }
+      },
+      "title": "cdp_eventsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_scripts",
+    "description": "脚本清单，或按 script_id / url 分页读取源码。先用 cdp_send 发送 Debugger.enable。\n\n    本机 WMPF 不回放 Debugger.scriptParsed：清单 count 通常为 0，按 url 查不到。\n    这只影响“枚举”，不代表取不到源码——已知 scriptId 时 Debugger.getScriptSource 可用，\n    scriptId 可从 cdp_events 的 Runtime.consoleAPICalled.stackTrace.callFrames[].scriptId\n    取得（需先 cdp_send 发送 Runtime.enable + Debugger.enable）。\n    读取按 offset / max_bytes（1–40000）分页，返回 total_bytes / truncated / next_offset，\n    单个脚本可能有数百 KB 到数 MB，需按页拼接；离线还原工程目录仍用 decrypt_wxapkg。\n    ",
+    "inputSchema": {
+      "properties": {
+        "script_id": {
+          "default": "",
+          "title": "Script Id",
+          "type": "string"
+        },
+        "url": {
+          "default": "",
+          "title": "Url",
+          "type": "string"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "max_bytes": {
+          "default": 12000,
+          "title": "Max Bytes",
+          "type": "integer"
+        }
+      },
+      "title": "cdp_scriptsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "extract_api_surface",
+    "description": "静态接口/云函数面（candidate 级；confirmed 需 netlog 或 Network 域运行期证据）。\n\n    运行期证据可用 cdp_events 读取 Network.* / Runtime.consoleAPICalled 等事件取得，\n    需先用 cdp_send 显式启用对应域。\n    输出体量受 MCP 响应上限（50000 字符）约束：request_urls 按命中次数取 limit 条\n    （offset 翻页取后续），wx_api_urls / cloud_functions 上限 min(limit, 80)；\n    各节同时返回 *_total 真实总量，存在截断时一眼可见。\n    ",
+    "inputSchema": {
+      "properties": {
+        "appid": {
+          "title": "Appid",
+          "type": "string"
+        },
+        "limit": {
+          "default": 100,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "appid"
+      ],
+      "title": "extract_api_surfaceArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "decrypt_wxapkg",
+    "description": "离线解密本机 V1MMWX 小程序包并还原工程目录（Ackites/KillWxapkg, MIT）。\n\n    异步任务：start 立即返回 task_id，实际解密在后台执行，因此不会占用\n    MCP 会话；随后用 status 轮询进度与 ETA，list 看最近任务，cancel 终止。\n    status 返回与阶段对应的真实进度（decrypt/unpack/format/restore），\n    ETA 仅在样本足够时给 candidate 级估算，否则为 None 并说明原因。\n\n    start 参数：appid 必填（解密密钥由 appid 派生，必须与包匹配）；\n    version 省略取最新已落盘版本；out_dir 可由调用方指定，不同 Agent 传\n    各自绝对路径即可隔离（默认 out/wxapkg/<appid>/<version>）。\n    pretty 默认关闭（大脚本美化实测极慢，>2MB 会自动跳过）。\n    只处理本机包的副本，不接触任何运行中的微信/应用宝进程；\n    解密产物按 wxapkg 头(0xBE)校验，不通过即返回 blocked。\n    仅限分析本人所有或已获授权的包。\n    ",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "default": "start",
+          "enum": [
+            "start",
+            "status",
+            "list",
+            "cancel"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "task_id": {
+          "default": "",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "appid": {
+          "default": "",
+          "title": "Appid",
+          "type": "string"
+        },
+        "out_dir": {
+          "default": "",
+          "title": "Out Dir",
+          "type": "string"
+        },
+        "version": {
+          "default": "",
+          "title": "Version",
+          "type": "string"
+        },
+        "restore": {
+          "default": true,
+          "title": "Restore",
+          "type": "boolean"
+        },
+        "pretty": {
+          "default": false,
+          "title": "Pretty",
+          "type": "boolean"
+        },
+        "timeout": {
+          "default": 300,
+          "title": "Timeout",
+          "type": "integer"
+        }
+      },
+      "title": "decrypt_wxapkgArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "index",
+    "description": "管理本机索引：统计、浏览、重建或列出已索引应用的包。在线搜索使用 search_mini_programs。",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "default": "stats",
+          "enum": [
+            "stats",
+            "browse",
+            "rebuild",
+            "packages"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        }
+      },
+      "title": "indexArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "runtime_status",
+    "description": "当前 MCP 创建的会话及登录/启动/调试状态；可选附带运行时诊断和进程快照。",
+    "inputSchema": {
+      "properties": {
+        "include_processes": {
+          "default": false,
+          "title": "Include Processes",
+          "type": "boolean"
+        }
+      },
+      "title": "runtime_statusArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "netlog",
+    "description": "查找已有 NetLog，或对指定文件同时生成摘要和接口清单；采集说明见 wmpf://reference/netlog。\n\n    analyze 的 path 不存在时返回 ok=false + reason，不抛异常。\n    ",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "default": "discover",
+          "enum": [
+            "discover",
+            "analyze"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "title": "netlogArguments",
+      "type": "object"
+    }
+  }
+]

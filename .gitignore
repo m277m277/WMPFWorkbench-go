@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+/data/
+/out/
+/bridge/node_modules/
+/runtime/
+*.obj
+*.ilk
+*.pdb
+*.exe
+*.dll
+/.worktrees/
+/dist/
+/build/
+/artifacts/
+/vendor/KillWxapkg/.git/
+native/internal/bundle/bin/*.exe

@@ -1,0 +1,91 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"wmpfworkbench/internal/app"
+	"wmpfworkbench/internal/bundle"
+	"wmpfworkbench/internal/config"
+	"wmpfworkbench/internal/core"
+	"wmpfworkbench/internal/hostruntime"
+	"wmpfworkbench/internal/mcpserver"
+)
+
+// runMCP serves the same core.Service in MCP mode. The stdio transport must be
+// started by the MCP client (it owns the pipes), but it can live in this single
+// executable because the SDK only needs stdin/stdout.
+func runMCP(root, transport string, port int, cfgPath string) error {
+	p, err := app.Resolve(root)
+	if err != nil {
+		return err
+	}
+	if helpers, err := bundle.Ensure(p.Data); err == nil {
+		bundle.Apply(helpers)
+	}
+	service := core.New(p)
+	defer service.Close()
+	if cfgPath != "" {
+		service.Config = config.New(cfgPath)
+		service.Account.Config = service.Config
+		service.Runtime = hostruntime.New(p, service.Config, service.Account)
+	}
+	server, err := mcpserver.New(service)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	switch transport {
+	case "stdio":
+		return server.Run(ctx, &mcp.StdioTransport{})
+	case "http":
+		values, err := service.Config.Read()
+		if err != nil {
+			return err
+		}
+		if port == 0 {
+			port = config.Int(values, "mcp_port")
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("invalid port")
+		}
+		stop := make(chan struct{}, 1)
+		handler, err := mcpserver.HTTP(service, server, config.String(values, "mcp_token"), func() {
+			select {
+			case stop <- struct{}{}:
+			default:
+			}
+		})
+		if err != nil {
+			return err
+		}
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			return err
+		}
+		httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+		done := make(chan error, 1)
+		go func() { done <- httpServer.Serve(listener) }()
+		select {
+		case err := <-done:
+			if err != http.ErrServerClosed {
+				return err
+			}
+		case <-ctx.Done():
+		case <-stop:
+		}
+		shutdownCtx, close := context.WithTimeout(context.Background(), 5*time.Second)
+		defer close()
+		httpServer.Shutdown(shutdownCtx)
+		return nil
+	}
+	return fmt.Errorf("transport must be stdio or http")
+}
