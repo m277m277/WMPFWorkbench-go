@@ -124,7 +124,7 @@
 | 依赖 | 说明 |
 |:---|:---|
 | Windows 10/11 x64 | 仅支持 Windows |
-| **应用宝 PC（WMPF 运行时）** | **必需但不在本仓库分发**，来自其 `WmpfRuntime\5.10.7300.414\`，详见下方 |
+| **WMPF 运行时 5.10.7300.414** | **必需但不在本仓库分发**，须从应用宝 PC 安装目录 `WmpfRuntime\5.10.7300.414\` 获取，详见下方 |
 | Go 1.23+ | 构建登录服务与 MCP/GUI |
 | Visual Studio 2022 x64 C++ 工具链 | 构建 C++ 宿主与观测 worker（vswhere 自动查找） |
 | WebView2 Runtime | GUI 使用，系统通常已自带 |
@@ -132,9 +132,22 @@
 ### 2. 运行时依赖（重要）
 
 <details open>
-<summary>本项目的 C++ 宿主依赖微信的 WMPF 运行库（<code>WeChatAppEx.exe</code>、<code>flue.dll</code>、pcsdk 等）。这些 DLL <b>属于微信产品、可能涉及侵权，因此不随本仓库分发</b>。</summary>
+<summary>本项目依赖一整套 WMPF 运行时（约 386 MB），<b>不随仓库或 Release 分发</b>，需用户自行从应用宝 PC 获取。</summary>
 
-**运行时来源是应用宝 PC 客户端自带的 `WmpfRuntime\5.10.7300.414\` 目录，不是微信桌面端。** 实测微信桌面端各版本、企业微信的运行时文件哈希均与 `hostruntime/validate.go` 锁定值不匹配；只有应用宝 PC（如 5.10.79.10）安装目录下的该目录 5/5 精确匹配。
+**先澄清一个容易困惑的点：目录里有 `WeChatAppEx.exe`、`flue.dll`、`wxgame_client.dll` 等微信名字的文件，为什么还说"从应用宝 PC 获取"？**
+
+WMPF 是微信团队开发的"小程序容器"引擎，以微信命名，但作为通用组件被打包进多个腾讯产品（微信桌面端、企业微信、应用宝 PC）。**同一套引擎，不同产品携带的版本不同**。本项目 `hostruntime/validate.go` 锁定了 5 个文件的 SHA-256（`flue.dll`、`wmpf_host_export_x64.dll`、`libamssdk.dll`、`pcyyb_sdk_dll.dll`、`WeChatAppEx.exe`），实测结果：
+
+| 来源 | 校验结果 |
+|---|---|
+| 微信桌面端 4.2.0.52 RadiumWMPF（flue 2.5.8.26134） | 5 个文件全部不匹配 |
+| 微信桌面端 3.x RadiumWMPF | 不匹配，且缺 3 个文件 |
+| 企业微信 wmpf_Applet 2.1.4.x | 不匹配 |
+| **应用宝 PC 的 `WmpfRuntime\5.10.7300.414\`** | **5/5 精确匹配** |
+
+所以"应用宝"指的是**获取渠道**——只有这份 5.10.7300.414 能过校验并工作；文件名带 `WeChat` 是引擎产品命名，两者不矛盾。目录里的 `file_component.xml` 也标注了 `appClientId="UniWeChatWin"`、子插件 `PcYybSdk`（PC 应用宝 SDK），正是这套引擎被应用宝集成的证据。
+
+**为什么必须是整目录，不是只拷几个 DLL**：`flue.dll`（201 MB）是 Chromium 级浏览器引擎，它启动时会拉起同目录的 `WeChatAppEx.exe`，并依赖图形栈（`libEGL`/`libGLESv2`/`vk_swiftshader`/`dxcompiler`）、资源包（`wmpf_resources.pak` 26 MB、各 `.pak`、`icudtl.dat`）。缺任何一项，renderer 起不来或 CDP 连不上。`validate.go` 只校验 5 个关键文件是**版本指纹**，但运行需要的是完整环境。
 
 获取步骤：
 
