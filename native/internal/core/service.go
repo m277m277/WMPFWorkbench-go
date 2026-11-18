@@ -177,9 +177,12 @@ func (s *Service) Call(ctx context.Context, name string, args map[string]any) (a
 		if s.LoginSvc != nil {
 			service = s.LoginSvc.Status(ctx)
 		}
+		// login_url blank on a fresh config falls back to the login port inside
+		// account.Client, so a service that is already up is reached instead of
+		// reporting "登录服务尚未启动".
 		accounts, err := s.Account.Request(ctx, "/accounts", "GET", nil)
 		if err != nil {
-			return map[string]any{"accounts": []any{}, "selected_account": "", "error": "请启动桌面登录服务", "login_service": service}, nil
+			return map[string]any{"accounts": []any{}, "selected_account": "", "error": err.Error(), "login_service": service}, nil
 		}
 		return map[string]any{"accounts": accounts, "selected_account": config.String(cfg, "selected_account"), "login_service": service}, nil
 	case "runtime_status":

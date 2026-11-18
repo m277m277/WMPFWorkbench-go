@@ -37,7 +37,7 @@
 | Wails（前端运行时部分） | v2.10.2 | MIT |
 | WebView2 Runtime | 系统组件（本机 157.0.4341.46） | Microsoft 分发条款；**不随精简包分发** |
 | `vendor/KillWxapkg` | 上游 MIT 项目 | MIT；保留版权与许可文本 |
-| 微信运行时（WeChatAppEx/WeChatAppEx.exe、flue.dll、pcsdk 等） | 用户本机安装 | 不随包分发；离线包只允许拷贝经校验的 Runtime，并遵守其条款 |
+| 微信运行时（WeChatAppEx/WeChatAppEx.exe、flue.dll、pcsdk 等） | 用户本机提供，来源为应用宝 PC 的 `WmpfRuntime\5.10.7300.414\` | 不随包分发；离线包只允许拷贝经校验的 Runtime，并遵守其条款 |
 
 ## 4. 发行形态与义务
 

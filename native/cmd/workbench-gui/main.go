@@ -38,14 +38,15 @@ var assets embed.FS
 //go:embed assets/app_icon.jpg
 var iconData []byte
 
-const appVersion = "1.0.0"
+const appVersion = "1.0.1"
 
 type Backend struct {
-	ctx     context.Context
-	svc     *core.Service
-	cfgPath string
-	mu      sync.Mutex
-	logs    []string
+	ctx      context.Context
+	svc      *core.Service
+	cfgPath  string
+	mu       sync.Mutex
+	logs     []string
+	mcpError string
 }
 
 func (b *Backend) Startup(ctx context.Context) {
@@ -55,9 +56,11 @@ func (b *Backend) Startup(ctx context.Context) {
 	if values, err := b.svc.Config.Read(); err == nil && values["mcp_enabled"] != false {
 		go func() {
 			if err := runMCP(b.svc.Paths.Root, "http", 0, b.cfgPath); err != nil {
+				b.setMCPError(err.Error())
 				b.logf("MCP HTTP 服务未启动：%v（若端口被占用，说明已有实例在运行）", err)
 				return
 			}
+			b.setMCPError("")
 			b.logf("MCP HTTP 服务已退出")
 		}()
 	}
@@ -89,7 +92,20 @@ func (b *Backend) MCPStatus() map[string]any {
 	if conn != nil {
 		conn.Close()
 	}
-	return map[string]any{"running": running, "enabled": enabled, "port": port, "url": fmt.Sprintf("http://127.0.0.1:%d/mcp", port)}
+	b.mu.Lock()
+	mcpError := b.mcpError
+	b.mu.Unlock()
+	out := map[string]any{"running": running, "enabled": enabled, "port": port, "url": fmt.Sprintf("http://127.0.0.1:%d/mcp", port)}
+	if !running && mcpError != "" {
+		out["error"] = mcpError
+	}
+	return out
+}
+
+func (b *Backend) setMCPError(text string) {
+	b.mu.Lock()
+	b.mcpError = text
+	b.mu.Unlock()
 }
 
 var (

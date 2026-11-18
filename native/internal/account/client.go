@@ -3,6 +3,8 @@ package account
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,40 @@ func HTTPClient(timeout time.Duration) *http.Client {
 }
 func New(cfg *config.Store) *Client { return &Client{cfg, HTTPClient(95 * time.Second)} }
 
+// base resolves the local login-service endpoint the same way loginsvc does:
+// an empty login_url falls back to http://127.0.0.1:<login_port>. Keeping the
+// two paths consistent avoids "登录服务尚未启动" on a first run whose defaults
+// leave login_url blank while the service is actually up on the default port.
+func (c *Client) base(values config.Values) (string, string, error) {
+	base := config.String(values, "login_url")
+	if base == "" {
+		port := config.Int(values, "login_port")
+		if port == 0 {
+			port = 18766
+		}
+		base = fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" {
+		return "", "", errors.New("登录服务地址必须是本机 http://127.0.0.1")
+	}
+	token := config.String(values, "login_token")
+	if token == "" {
+		// A fresh default config leaves login_token blank. Mint it here with the
+		// same shape loginsvc uses and persist it, so the account list works even
+		// if this read races the GUI's asynchronous Ensure on startup.
+		var raw [32]byte
+		if _, randErr := rand.Read(raw[:]); randErr != nil {
+			return "", "", randErr
+		}
+		token = base64.RawURLEncoding.EncodeToString(raw[:])
+		if _, updateErr := c.Config.Update(context.Background(), map[string]any{"login_token": token}); updateErr != nil {
+			return "", "", updateErr
+		}
+	}
+	return base, token, nil
+}
+
 // Avatar returns the raw profile image. The desktop token only goes to the
 // local login service, never to a remote host.
 func (c *Client) Avatar(ctx context.Context, ref string) ([]byte, error) {
@@ -36,10 +72,9 @@ func (c *Client) Avatar(ctx context.Context, ref string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := config.String(values, "login_url")
-	token := config.String(values, "login_token")
-	if base == "" {
-		return nil, errors.New("登录服务尚未配置")
+	base, token, err := c.base(values)
+	if err != nil {
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, "GET", base+"/accounts/avatar?ref="+url.QueryEscape(ref), nil)
 	if err != nil {
@@ -65,9 +100,11 @@ func (c *Client) Request(ctx context.Context, path, method string, body any) (an
 	if err != nil {
 		return nil, err
 	}
-	base := config.String(cfg, "login_url")
-	u, err := url.Parse(base)
-	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || config.String(cfg, "login_token") == "" {
+	base, token, err := c.base(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
 		return nil, errors.New("登录服务尚未启动")
 	}
 	var reader io.Reader
@@ -82,7 +119,7 @@ func (c *Client) Request(ctx context.Context, path, method string, body any) (an
 	if err != nil {
 		return nil, errors.New("登录服务地址无效")
 	}
-	req.Header.Set("Authorization", "Bearer "+config.String(cfg, "login_token"))
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	response, err := c.HTTP.Do(req)
 	if err != nil {

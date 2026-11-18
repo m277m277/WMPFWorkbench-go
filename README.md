@@ -124,7 +124,7 @@
 | 依赖 | 说明 |
 |:---|:---|
 | Windows 10/11 x64 | 仅支持 Windows |
-| **微信桌面端（WMPF 运行时）** | **必需但不在本仓库分发**，详见下方 |
+| **应用宝 PC（WMPF 运行时）** | **必需但不在本仓库分发**，来自其 `WmpfRuntime\5.10.7300.414\`，详见下方 |
 | Go 1.23+ | 构建登录服务与 MCP/GUI |
 | Visual Studio 2022 x64 C++ 工具链 | 构建 C++ 宿主与观测 worker（vswhere 自动查找） |
 | WebView2 Runtime | GUI 使用，系统通常已自带 |
@@ -134,9 +134,15 @@
 <details open>
 <summary>本项目的 C++ 宿主依赖微信的 WMPF 运行库（<code>WeChatAppEx.exe</code>、<code>flue.dll</code>、pcsdk 等）。这些 DLL <b>属于微信产品、可能涉及侵权，因此不随本仓库分发</b>。</summary>
 
-- 请从你本机已安装的微信桌面端获取对应运行时（`5.10.7300.414` / flue sdk 2.4.4），或自行配置到项目约定路径。
-- 没有该运行时，登录 / 搜索 / 源码还原可用，但 **独立启动与调试无法工作**。
-- 仓库 `.gitignore` 已排除 `runtime/`、`data/`、`dist/`、`build/`，这些运行态文件不会被提交。
+**运行时来源是应用宝 PC 客户端自带的 `WmpfRuntime\5.10.7300.414\` 目录，不是微信桌面端。** 实测微信桌面端各版本、企业微信的运行时文件哈希均与 `hostruntime/validate.go` 锁定值不匹配；只有应用宝 PC（如 5.10.79.10）安装目录下的该目录 5/5 精确匹配。
+
+获取步骤：
+
+1. 安装应用宝 PC 版；
+2. 进入其安装目录，找到 `WmpfRuntime\5.10.7300.414\`（整目录，含 `host\` 与 `runtime\`，约 386 MB）；
+3. 将该目录整体拷贝到工作台根目录的 `runtime\5.10.7300.414\`。
+
+没有该运行时，登录 / 搜索 / 源码还原可用，但 **独立启动与调试无法工作**。仓库 `.gitignore` 已排除 `runtime/`、`data/`、`dist/`、`build/`，这些运行态文件不会被提交。
 
 </details>
 
@@ -146,7 +152,7 @@
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File native\build-release.ps1
 ```
 
-脚本会先编译 C++ 宿主、Frida worker、wxapkg 工具并拷入 `native/internal/bundle/bin/`（`go:embed` 输入），再产出两个自包含 Go 程序：**桌面 GUI** 与 **MCP 服务**。`bundle/bin` 下的 exe 不入库，由构建脚本生成。
+脚本会先编译 C++ 宿主、Frida worker、wxapkg 工具并拷入 `native/internal/bundle/bin/`（`go:embed` 输入），再产出一个自包含的 **`wmpf-gui.exe`**：它同时提供桌面 GUI 与 MCP 服务（`-mcp stdio|http`）。`bundle/bin` 下的 exe 不入库，由构建脚本生成。
 
 ### 4. 使用
 

@@ -35,6 +35,13 @@ func (r resources) avatarPath(openid string) string {
 	return filepath.Join(r.Avatars, safeName(openid)+".jpg")
 }
 
+// avatarRel is the portable form stored in the database: relative to Root so a
+// relocated data/ directory keeps resolving. Legacy rows holding an absolute
+// path are still served by serveAvatar.
+func (r resources) avatarRel(openid string) string {
+	return filepath.ToSlash(filepath.Join("avatars", safeName(openid)+".jpg"))
+}
+
 func (r resources) qrPath(sessionID string) string {
 	return filepath.Join(r.QR, sessionID+".jpg")
 }

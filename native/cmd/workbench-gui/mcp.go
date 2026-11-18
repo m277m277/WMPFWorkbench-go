@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -57,8 +59,22 @@ func runMCP(root, transport string, port int, cfgPath string) error {
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("invalid port")
 		}
+		token := config.String(values, "mcp_token")
+		if token == "" {
+			// Mirror loginsvc: mint and persist a token on first run so a fresh
+			// default config can start the HTTP MCP endpoint instead of failing
+			// with "desktop MCP access token missing".
+			var raw [32]byte
+			if _, randErr := rand.Read(raw[:]); randErr != nil {
+				return randErr
+			}
+			token = base64.RawURLEncoding.EncodeToString(raw[:])
+			if _, updateErr := service.Config.Update(context.Background(), map[string]any{"mcp_token": token}); updateErr != nil {
+				return updateErr
+			}
+		}
 		stop := make(chan struct{}, 1)
-		handler, err := mcpserver.HTTP(service, server, config.String(values, "mcp_token"), func() {
+		handler, err := mcpserver.HTTP(service, server, token, func() {
 			select {
 			case stop <- struct{}{}:
 			default:

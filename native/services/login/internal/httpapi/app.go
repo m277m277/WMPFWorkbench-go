@@ -644,13 +644,21 @@ func (a *App) resyncAll(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) serveAvatar(w http.ResponseWriter, r *http.Request, acc *store.WechatAccount) {
 	if acc.Avatar != nil && *acc.Avatar != "" {
-		if _, err := os.Stat(*acc.Avatar); err == nil {
+		raw := *acc.Avatar
+		// New rows store a Root-relative path; legacy rows may hold an absolute
+		// path. Resolve relative values against the resource root so a moved
+		// data/ directory still works.
+		path := raw
+		if !filepath.IsAbs(raw) && !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+			path = filepath.Join(a.resources.Root, filepath.FromSlash(raw))
+		}
+		if _, err := os.Stat(path); err == nil {
 			w.Header().Set("Content-Type", "image/jpeg")
-			http.ServeFile(w, r, *acc.Avatar)
+			http.ServeFile(w, r, path)
 			return
 		}
-		if strings.HasPrefix(*acc.Avatar, "http://") || strings.HasPrefix(*acc.Avatar, "https://") {
-			http.Redirect(w, r, *acc.Avatar, http.StatusFound)
+		if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+			http.Redirect(w, r, raw, http.StatusFound)
 			return
 		}
 	}
@@ -795,7 +803,8 @@ func (a *App) resolveAvatar(ctx context.Context, openid string, userInfo map[str
 	}
 	dest := a.resources.avatarPath(openid)
 	if downloadAvatar(ctx, u, dest, a.cfg.AvatarTimeout) {
-		return dest
+		// Store the portable Root-relative form, not the machine-specific path.
+		return a.resources.avatarRel(openid)
 	}
 	return u
 }

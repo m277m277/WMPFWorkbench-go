@@ -19,4 +19,4 @@
 
 - 登录服务源码来自原始项目 `services/login`（`yyb_go` 模块），已复制到 `native/services/login` 并在同进程内运行，不再分发独立 exe。
 - 私有调试桥的 wire format 由 `native/internal/bridge/codec.go` 用 Go 标准库独立实现。
-- 微信运行时（WeChatAppEx、flue.dll 等）不随包分发，由用户本机安装。
+- 微信运行时（WeChatAppEx、flue.dll 等）不随包分发，由用户本机提供，实际来源为应用宝 PC 的 `WmpfRuntime\5.10.7300.414\` 目录。
