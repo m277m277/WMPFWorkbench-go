@@ -67,6 +67,32 @@ func TestEnsureReusesHealthyExternalService(t *testing.T) {
 	}
 }
 
+// TestWaitHealthyToleratesTransientFailure guards the fix for login-service
+// restarts: a health check that fails once (service busy or still warming up)
+// must not be treated as dead, otherwise the Ensure path stops and restarts the
+// service mid-scan and drops the QR session.
+func TestWaitHealthyToleratesTransientFailure(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(server.URL[len("http://127.0.0.1:"):])
+	m, _ := fixture(t, server.URL, port)
+	s, err := m.settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.waitHealthy(context.Background(), s, 3*time.Second) {
+		t.Fatal("transient health failures must not be treated as a dead service")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }

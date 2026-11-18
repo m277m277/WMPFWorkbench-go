@@ -39,12 +39,21 @@ type Manager struct {
 	Config  *config.Store
 	HTTP    *http.Client
 	Command func(name string, args []string, env []string) *exec.Cmd
+	// Logf, when set, receives human-readable diagnostics about every request
+	// and lifecycle decision. The GUI wires it to its log panel.
+	Logf func(format string, args ...any)
 
 	mu   sync.Mutex
 	proc *exec.Cmd
 	done chan struct{}
 
 	embeddedService *embedded.Service
+}
+
+func (m *Manager) logf(format string, args ...any) {
+	if m.Logf != nil {
+		m.Logf(format, args...)
+	}
 }
 
 func New(p app.Paths, cfg *config.Store) *Manager {
@@ -110,26 +119,31 @@ func (m *Manager) settings() (settings, error) {
 func (m *Manager) Request(ctx context.Context, path, method string, body any) (any, error) {
 	s, err := m.settings()
 	if err != nil {
+		m.logf("登录服务请求 %s %s 失败：读取配置出错：%v", method, path, err)
 		return nil, err
 	}
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
+			m.logf("登录服务请求 %s %s 失败：序列化请求体出错：%v", method, path, err)
 			return nil, err
 		}
 		reader = bytes.NewReader(raw)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, s.URL+path, reader)
 	if err != nil {
+		m.logf("登录服务请求 %s %s 失败：构造请求出错：%v", method, path, err)
 		return nil, errors.New("登录服务请求无效")
 	}
 	request.Header.Set("Authorization", "Bearer "+s.Token)
 	request.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 65 * time.Second}
+	start := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, errors.New("登录服务连接失败或请求超时")
+		m.logf("登录服务请求 %s %s 连接失败（耗时 %s）：%v", method, path, time.Since(start).Round(time.Millisecond), err)
+		return nil, fmt.Errorf("登录服务连接失败或请求超时（%s %s）：%w", method, path, err)
 	}
 	defer response.Body.Close()
 	var envelope struct {
@@ -137,13 +151,25 @@ func (m *Manager) Request(ctx context.Context, path, method string, body any) (a
 		Data json.RawMessage `json:"data"`
 		Msg  string          `json:"msg"`
 	}
-	if json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&envelope) != nil || envelope.Code != 0 || envelope.Data == nil {
-		return nil, fmt.Errorf("登录服务返回无效数据（HTTP %d）", response.StatusCode)
+	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&envelope)
+	if decodeErr != nil || envelope.Code != 0 || envelope.Data == nil {
+		msg := envelope.Msg
+		if msg == "" {
+			msg = "无错误信息"
+		}
+		m.logf("登录服务请求 %s %s 返回异常（HTTP %d，code=%d，msg=%s，耗时 %s）decodeErr=%v",
+			method, path, response.StatusCode, envelope.Code, msg, time.Since(start).Round(time.Millisecond), decodeErr)
+		if response.StatusCode == http.StatusUnauthorized {
+			return nil, errors.New("登录服务鉴权失败（HTTP 401）：login_token 不一致，请重启程序")
+		}
+		return nil, fmt.Errorf("登录服务返回无效数据（HTTP %d，code=%d，msg=%s）", response.StatusCode, envelope.Code, msg)
 	}
 	var result any
-	if json.Unmarshal(envelope.Data, &result) != nil {
+	if err := json.Unmarshal(envelope.Data, &result); err != nil {
+		m.logf("登录服务请求 %s %s 返回数据无法解析：%v", method, path, err)
 		return nil, errors.New("登录服务返回无效数据")
 	}
+	m.logf("登录服务请求 %s %s 成功（HTTP %d，耗时 %s）", method, path, response.StatusCode, time.Since(start).Round(time.Millisecond))
 	return result, nil
 }
 
@@ -188,39 +214,59 @@ func (m *Manager) Ensure(ctx context.Context) (Status, error) {
 		if m.proc != nil && m.proc.Process != nil {
 			status.Owned, status.PID = true, m.proc.Process.Pid
 		}
+		m.logf("登录服务已就绪（复用现有实例 %s）", s.URL)
 		return status, nil
 	}
 	// The login service runs inside this process; no helper binary is released.
 	if m.embeddedService != nil {
-		if m.healthy(ctx, s) {
+		// A single failed /health is not proof the service is dead: it may still
+		// be warming up or briefly busy. Restarting on the first miss is what
+		// dropped QR sessions mid-scan, so give it a short grace window first.
+		m.logf("登录服务健康检查未通过，重试中（不会立即重启）…")
+		if m.waitHealthy(ctx, s, 6*time.Second) {
 			status.Running, status.Healthy, status.Owned, status.PID = true, true, true, os.Getpid()
+			m.logf("登录服务恢复响应，继续复用")
 			return status, nil
 		}
+		m.logf("登录服务持续无响应，重启服务")
 		m.embeddedService.Stop(context.Background())
 		m.embeddedService = nil
 	}
 	os.MkdirAll(s.ResourceDir, 0700)
+	m.logf("正在启动登录服务（%s，数据目录 %s）", s.URL, s.ResourceDir)
 	service, err := embedded.Start(s.ResourceDir, s.Port, s.Token)
 	if err != nil {
 		status.Error = "登录服务启动失败：" + err.Error()
+		m.logf("登录服务启动失败：%v", err)
 		return status, errors.New(status.Error)
 	}
 	m.embeddedService = service
-	deadline := time.Now().Add(25 * time.Second)
-	for time.Now().Before(deadline) {
-		if m.healthy(ctx, s) {
-			status.Running, status.Healthy, status.Owned, status.PID = true, true, true, os.Getpid()
-			return status, nil
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(150 * time.Millisecond):
-		}
+	if m.waitHealthy(ctx, s, 25*time.Second) {
+		status.Running, status.Healthy, status.Owned, status.PID = true, true, true, os.Getpid()
+		m.logf("登录服务已就绪（%s）", s.URL)
+		return status, nil
 	}
 	m.embeddedService.Stop(context.Background())
 	m.embeddedService = nil
-	status.Error = "登录服务健康检查超时"
+	status.Error = fmt.Sprintf("登录服务健康检查超时：端口 %d 无响应（可能被其他程序占用，或服务启动后立即退出）", s.Port)
+	m.logf("%s", status.Error)
 	return status, errors.New(status.Error)
+}
+
+// waitHealthy polls /health until it succeeds or the window elapses.
+func (m *Manager) waitHealthy(ctx context.Context, s settings, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		if m.healthy(ctx, s) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	return m.healthy(ctx, s)
 }
 
 // Stop requests the graceful shutdown endpoint, then terminates only a process

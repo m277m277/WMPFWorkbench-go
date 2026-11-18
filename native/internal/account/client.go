@@ -17,6 +17,15 @@ import (
 type Client struct {
 	Config *config.Store
 	HTTP   *http.Client
+	// Logf, when set, receives request-level diagnostics. The GUI wires it to
+	// its log panel so account-list failures are visible instead of silent.
+	Logf func(format string, args ...any)
+}
+
+func (c *Client) logf(format string, args ...any) {
+	if c.Logf != nil {
+		c.Logf(format, args...)
+	}
 }
 type Session struct {
 	Cookie                          string
@@ -27,7 +36,9 @@ type Session struct {
 func HTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
-func New(cfg *config.Store) *Client { return &Client{cfg, HTTPClient(95 * time.Second)} }
+func New(cfg *config.Store) *Client {
+	return &Client{Config: cfg, HTTP: HTTPClient(95 * time.Second)}
+}
 
 // base resolves the local login-service endpoint the same way loginsvc does:
 // an empty login_url falls back to http://127.0.0.1:<login_port>. Keeping the
@@ -88,44 +99,58 @@ func (c *Client) Avatar(ctx context.Context, ref string) ([]byte, error) {
 func (c *Client) Request(ctx context.Context, path, method string, body any) (any, error) {
 	cfg, err := c.Config.Read()
 	if err != nil {
+		c.logf("账号服务请求 %s %s 失败：读取配置出错：%v", method, path, err)
 		return nil, err
 	}
 	base, token, err := c.base(cfg)
 	if err != nil {
+		c.logf("账号服务请求 %s %s 失败：解析服务地址出错：%v", method, path, err)
 		return nil, err
 	}
 	if token == "" {
+		c.logf("账号服务请求 %s %s 失败：login_token 为空", method, path)
 		return nil, errors.New("登录服务尚未启动")
 	}
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
+			c.logf("账号服务请求 %s %s 失败：序列化请求体出错：%v", method, path, err)
 			return nil, err
 		}
 		reader = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, base+path, reader)
 	if err != nil {
+		c.logf("账号服务请求 %s %s 失败：构造请求出错：%v", method, path, err)
 		return nil, errors.New("登录服务地址无效")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	start := time.Now()
 	response, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, errors.New("登录服务连接失败或请求超时")
+		c.logf("账号服务请求 %s %s 连接失败（%s，耗时 %s）：%v", method, path, base, time.Since(start).Round(time.Millisecond), err)
+		return nil, fmt.Errorf("登录服务连接失败或请求超时（%s %s）：%w", method, path, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		return nil, fmt.Errorf("登录服务请求失败，HTTP %d", response.StatusCode)
+		c.logf("账号服务请求 %s %s 返回 HTTP %d（%s，耗时 %s）", method, path, response.StatusCode, base, time.Since(start).Round(time.Millisecond))
+		if response.StatusCode == http.StatusUnauthorized {
+			return nil, fmt.Errorf("登录服务鉴权失败（HTTP 401，%s）：login_token 不一致，请重启程序", base)
+		}
+		return nil, fmt.Errorf("登录服务请求失败，HTTP %d（%s %s）", response.StatusCode, method, path)
 	}
 	var envelope struct {
 		Code int             `json:"code"`
 		Data json.RawMessage `json:"data"`
+		Msg  string          `json:"msg"`
 	}
 	if json.NewDecoder(io.LimitReader(response.Body, 16<<20)).Decode(&envelope) != nil || envelope.Code != 0 || envelope.Data == nil {
+		c.logf("账号服务请求 %s %s 返回无效数据（HTTP %d，code=%d，msg=%s）", method, path, response.StatusCode, envelope.Code, envelope.Msg)
 		return nil, errors.New("登录服务返回无效数据")
 	}
+	c.logf("账号服务请求 %s %s 成功（HTTP 200，耗时 %s）", method, path, time.Since(start).Round(time.Millisecond))
 	var result any
 	if json.Unmarshal(envelope.Data, &result) != nil {
 		return nil, errors.New("登录服务返回无效数据")

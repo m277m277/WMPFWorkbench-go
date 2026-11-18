@@ -50,10 +50,14 @@ type Backend struct {
 	mcpCancel context.CancelFunc
 	mcpDone   chan struct{}
 	skipMCP   bool // tests set this to avoid launching a real listener
+	qrLastState string
 }
 
 func (b *Backend) Startup(ctx context.Context) {
 	b.ctx = ctx
+	// Stream login-service and account-client diagnostics into the GUI log panel.
+	b.svc.LoginSvc.Logf = b.logf
+	b.svc.Account.Logf = b.logf
 	// The HTTP MCP endpoint in the clipboard config must actually listen, or
 	// clients report "fetch failed"; the GUI therefore owns its lifecycle.
 	if values, err := b.svc.Config.Read(); err == nil && values["mcp_enabled"] != false {
@@ -124,7 +128,7 @@ func (b *Backend) startMCP() {
 	b.mu.Unlock()
 	go func() {
 		defer close(done)
-		if err := runMCPWithContext(ctx, b.svc.Paths.Root, "http", 0, b.cfgPath); err != nil {
+		if err := serveMCP(ctx, b.svc, "http", 0); err != nil {
 			if ctx.Err() == nil {
 				b.setMCPError(err.Error())
 				b.logf("MCP HTTP 服务未启动：%v", err)
@@ -303,8 +307,21 @@ func (b *Backend) LoginStatus() (any, error) {
 			b.logf("登录状态异常：%s", msg)
 		}
 		accounts, _ := row["accounts"].([]any)
-		if len(accounts) == 0 {
+		switch {
+		case len(accounts) == 0:
 			b.logf("账号列表为空：请确认已扫码登录，或查看上方登录状态异常原因")
+		default:
+			ids := make([]string, 0, len(accounts))
+			for _, item := range accounts {
+				if acc, ok := item.(map[string]any); ok {
+					if nick, ok := acc["nickname"].(string); ok && nick != "" {
+						ids = append(ids, nick)
+					} else if id, ok := acc["openid"].(string); ok && id != "" {
+						ids = append(ids, nick)
+					}
+				}
+			}
+			b.logf("账号列表已加载：共 %d 个（%s）", len(accounts), strings.Join(ids, ", "))
 		}
 	}
 	return out, nil
@@ -370,6 +387,9 @@ func (b *Backend) Avatar(ref string) (string, error) {
 }
 
 func (b *Backend) QRCreate() (any, error) {
+	b.mu.Lock()
+	b.qrLastState = ""
+	b.mu.Unlock()
 	b.logf("正在生成登录二维码…")
 	result, err := b.svc.LoginSvc.QRCreate(b.ctx)
 	if err != nil {
@@ -381,7 +401,37 @@ func (b *Backend) QRCreate() (any, error) {
 }
 
 func (b *Backend) QRPoll(session string) (any, error) {
-	return b.svc.LoginSvc.QRPoll(b.ctx, session)
+	value, err := b.svc.LoginSvc.QRPoll(b.ctx, session)
+	if err != nil {
+		// Polling is high-frequency; only surface a failure once per state.
+		b.mu.Lock()
+		changed := b.qrLastState != "poll_error"
+		b.qrLastState = "poll_error"
+		b.mu.Unlock()
+		if changed {
+			b.logErr("扫码状态轮询", err, "若持续失败，请重新生成二维码")
+		}
+		return nil, err
+	}
+	state := ""
+	if row, ok := value.(map[string]any); ok {
+		for _, key := range []string{"status", "state", "code", "message"} {
+			if v, ok := row[key].(string); ok && v != "" {
+				state = key + "=" + v
+				break
+			}
+		}
+	}
+	if state != "" {
+		b.mu.Lock()
+		changed := b.qrLastState != state
+		b.qrLastState = state
+		b.mu.Unlock()
+		if changed {
+			b.logf("扫码状态：%s", state)
+		}
+	}
+	return value, nil
 }
 
 func (b *Backend) QRConfirm(session string) (any, error) {

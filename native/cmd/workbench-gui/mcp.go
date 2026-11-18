@@ -30,8 +30,8 @@ func runMCP(root, transport string, port int, cfgPath string) error {
 	return runMCPWithContext(ctx, root, transport, port, cfgPath)
 }
 
-// runMCPWithContext is the cancelable form used by the GUI so a settings change
-// (e.g. mcp_bind) can stop the old listener and start a new one in-process.
+// runMCPWithContext is the cancelable form used when this process is the MCP
+// server itself (the -mcp flag). It owns its own Service because no GUI exists.
 func runMCPWithContext(ctx context.Context, root, transport string, port int, cfgPath string) error {
 	p, err := app.Resolve(root)
 	if err != nil {
@@ -47,6 +47,15 @@ func runMCPWithContext(ctx context.Context, root, transport string, port int, cf
 		service.Account.Config = service.Config
 		service.Runtime = hostruntime.New(p, service.Config, service.Account)
 	}
+	return serveMCP(ctx, service, transport, port)
+}
+
+// serveMCP serves an existing Service over the requested transport. The GUI
+// calls this with its own Service so the MCP endpoint and the GUI share one
+// login service, one runtime session table and one config store. Creating a
+// second Service here used to make the GUI and MCP fight over the login port
+// (each Ensure could stop and restart the other's service mid-scan).
+func serveMCP(ctx context.Context, service *core.Service, transport string, port int) error {
 	server, err := mcpserver.New(service)
 	if err != nil {
 		return err
