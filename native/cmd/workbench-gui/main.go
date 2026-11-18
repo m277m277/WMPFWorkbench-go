@@ -38,7 +38,7 @@ var assets embed.FS
 //go:embed assets/app_icon.jpg
 var iconData []byte
 
-const appVersion = "1.0.3"
+const appVersion = "1.0.2"
 
 type Backend struct {
 	ctx       context.Context
