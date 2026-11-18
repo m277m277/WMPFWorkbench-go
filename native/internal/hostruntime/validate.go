@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Fixed RVAs in the embedded agents apply only to these measured binaries.
@@ -19,14 +21,24 @@ var runtimeHashes = map[string]string{
 	"runtime/WeChatAppEx.exe":       "2a927250e538ed6194e0136fc36e92cb727d5008ac1953d7a7a41364e20c15d3",
 }
 
+const runtimeHelp = "当前缺少微信 WMPF 运行时文件，无法启动小程序。" +
+	"请安装应用宝 PC 版，把其安装目录下的 WmpfRuntime\\5.10.7300.414\\ 整个目录拷贝为工作台根目录的 runtime\\5.10.7300.414\\（约 386MB，含 host\\ 与 runtime\\ 子目录）。" +
+	"这些 DLL 因可能侵权不随项目分发，必须由使用者本机提供。"
+
+// ValidateRuntime checks every required runtime file and reports ALL missing
+// or mismatched files at once, with an actionable fix, instead of failing on
+// the first file with an opaque message.
 func ValidateRuntime(ctx context.Context, root string) error {
+	var missing []string
+	var mismatched []string
 	for name, want := range runtimeHashes {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		f, err := os.Open(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
-			return errors.New("Runtime 文件缺失或不可读取: " + name)
+			missing = append(missing, name)
+			continue
 		}
 		h := sha256.New()
 		buf := make([]byte, 1<<20)
@@ -45,11 +57,22 @@ func ValidateRuntime(ctx context.Context, root string) error {
 		}
 		f.Close()
 		if err != nil && err != io.EOF {
-			return errors.New("Runtime 校验失败: " + name)
+			mismatched = append(mismatched, name+"（读取失败："+err.Error()+"）")
+			continue
 		}
-		if hex.EncodeToString(h.Sum(nil)) != want {
-			return errors.New("Runtime 版本或文件校验不匹配，禁止使用固定 RVA: " + name)
+		if got := hex.EncodeToString(h.Sum(nil)); got != want {
+			mismatched = append(mismatched, fmt.Sprintf("%s（实际 %s，期望 %s）", name, got, want))
 		}
 	}
-	return nil
+	if len(missing) == 0 && len(mismatched) == 0 {
+		return nil
+	}
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, "缺失文件: "+strings.Join(missing, ", "))
+	}
+	if len(mismatched) > 0 {
+		parts = append(parts, "校验不匹配: "+strings.Join(mismatched, ", "))
+	}
+	return errors.New("运行时预检失败。" + strings.Join(parts, "；") + "。" + runtimeHelp)
 }

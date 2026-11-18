@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,6 +177,61 @@ func (s *Store) Update(ctx context.Context, changes map[string]any) (Values, err
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// EnsureToken returns the token stored under key, generating and persisting a
+// random one on first use. The read-modify-write runs under the same file lock
+// as Update, so concurrent callers (GUI login service startup vs. account
+// client on first refresh) always observe a single shared token instead of
+// each minting a different one and invalidating each other's requests.
+func (s *Store) EnsureToken(ctx context.Context, key string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
+		return "", err
+	}
+	unlock, err := lockFile(ctx, s.Path+".lock")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	cfg, err := s.Read()
+	if err != nil {
+		return "", err
+	}
+	if token := String(cfg, key); token != "" {
+		return token, nil
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw[:])
+	cfg[key] = token
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(filepath.Dir(s.Path), ".config-*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(name, s.Path)
+	}
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func String(v Values, key string) string { s, _ := v[key].(string); return s }

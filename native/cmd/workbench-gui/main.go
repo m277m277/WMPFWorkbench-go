@@ -38,7 +38,7 @@ var assets embed.FS
 //go:embed assets/app_icon.jpg
 var iconData []byte
 
-const appVersion = "1.0.2"
+const appVersion = "1.0.3"
 
 type Backend struct {
 	ctx       context.Context
@@ -62,7 +62,11 @@ func (b *Backend) Startup(ctx context.Context) {
 	go func() {
 		status, err := b.svc.LoginSvc.Ensure(ctx)
 		if err != nil {
-			b.logf("登录服务启动失败：%s", status.Error)
+			detail := status.Error
+			if detail == "" {
+				detail = err.Error()
+			}
+			b.logErr("登录服务自动启动", err, "服务状态: "+detail)
 			return
 		}
 		b.logf("登录服务已自动启动（%s）", status.URL)
@@ -173,6 +177,20 @@ func (b *Backend) logf(format string, args ...any) {
 	}
 }
 
+// logErr records a failure with the full original error text and optional
+// context. Callers should use this instead of dropping err.Error() so users
+// can see exactly what went wrong in the GUI log panel.
+func (b *Backend) logErr(operation string, err error, context string) {
+	if err == nil {
+		return
+	}
+	line := operation + "失败：" + err.Error()
+	if context != "" {
+		line += "（" + context + "）"
+	}
+	b.logf("%s", line)
+}
+
 type ToolView struct {
 	Name        string          `json:"name"`
 	Group       string          `json:"group"`
@@ -272,18 +290,37 @@ func (b *Backend) SavePorts(loginPort, mcpPort int, bind string) (map[string]any
 	return b.Config(), nil
 }
 
-// LoginStatus returns masked account information plus service state.
+// LoginStatus returns masked account information plus service state. Failures
+// are logged in full so "logged in but no accounts" is diagnosable from the GUI.
 func (b *Backend) LoginStatus() (any, error) {
-	return b.svc.Call(b.ctx, "login_status", nil)
+	out, err := b.svc.Call(b.ctx, "login_status", nil)
+	if err != nil {
+		b.logErr("读取登录状态", err, "")
+		return out, err
+	}
+	if row, ok := out.(map[string]any); ok {
+		if msg, ok := row["error"].(string); ok && msg != "" {
+			b.logf("登录状态异常：%s", msg)
+		}
+		accounts, _ := row["accounts"].([]any)
+		if len(accounts) == 0 {
+			b.logf("账号列表为空：请确认已扫码登录，或查看上方登录状态异常原因")
+		}
+	}
+	return out, nil
 }
 
 func (b *Backend) StartLogin() (any, error) {
 	status, err := b.svc.LoginSvc.Ensure(b.ctx)
 	if err != nil {
-		b.logf("登录服务启动失败：%s", status.Error)
+		detail := status.Error
+		if detail == "" {
+			detail = err.Error()
+		}
+		b.logErr("登录服务启动", err, "服务状态: "+detail)
 		return status, err
 	}
-	b.logf("登录服务已就绪")
+	b.logf("登录服务已就绪（%s）", status.URL)
 	return status, nil
 }
 
@@ -304,6 +341,7 @@ func (b *Backend) RefreshAccount() (any, error) {
 	}
 	result, err := b.svc.Account.Request(b.ctx, "/accounts/refresh", "POST", map[string]any{"ref": ref})
 	if err != nil {
+		b.logErr("账号检查", err, "账号票据可能已过期，请重新扫码")
 		return nil, err
 	}
 	b.logf("账号检查完成")
@@ -332,9 +370,10 @@ func (b *Backend) Avatar(ref string) (string, error) {
 }
 
 func (b *Backend) QRCreate() (any, error) {
+	b.logf("正在生成登录二维码…")
 	result, err := b.svc.LoginSvc.QRCreate(b.ctx)
 	if err != nil {
-		b.logf("二维码生成失败")
+		b.logErr("二维码生成", err, "请确认登录服务已启动且网络可用")
 		return nil, err
 	}
 	b.logf("新二维码已生成，等待微信扫描")
@@ -348,6 +387,7 @@ func (b *Backend) QRPoll(session string) (any, error) {
 func (b *Backend) QRConfirm(session string) (any, error) {
 	value, err := b.svc.LoginSvc.QRConfirm(b.ctx, session)
 	if err != nil {
+		b.logErr("扫码登录确认", err, "二维码可能已过期，请重新生成")
 		return nil, err
 	}
 	if account, ok := value.(map[string]any); ok {
@@ -367,24 +407,40 @@ func (b *Backend) Search(keyword, source string) (any, error) {
 		source = "online"
 	}
 	b.logf("搜索：%s（%s）", keyword, source)
-	return b.svc.Call(b.ctx, "search_mini_programs", map[string]any{"keyword": keyword, "source": source, "limit": 30})
+	result, err := b.svc.Call(b.ctx, "search_mini_programs", map[string]any{"keyword": keyword, "source": source, "limit": 30})
+	if err != nil {
+		b.logErr("搜索小程序", err, "关键词="+keyword)
+		return nil, err
+	}
+	return result, nil
 }
 
 func (b *Backend) Launch(appid, entry string, seconds int, hide bool) (any, error) {
 	if _, err := b.svc.Config.Update(b.ctx, map[string]any{"hide_miniapp_window": hide}); err != nil {
+		b.logErr("保存窗口设置", err, "")
 		return nil, err
 	}
-	b.logf("打开并调试：%s", appid)
+	ctxInfo := fmt.Sprintf("appid=%s, 时长=%ds, 隐藏窗口=%v", appid, seconds, hide)
+	if entry != "" {
+		ctxInfo += ", 入口=" + entry
+	}
+	b.logf("打开并调试：%s", ctxInfo)
 	result, err := b.svc.Call(b.ctx, "launch", map[string]any{"appid": appid, "path": entry, "seconds": float64(seconds), "hide_window": hide})
 	if err != nil {
-		b.logf("启动失败：%v", err)
+		// preflight failures (e.g. missing runtime DLL) arrive here with a full,
+		// actionable message from ValidateRuntime; show it verbatim.
+		b.logErr("启动小程序", err, ctxInfo)
 		return nil, err
 	}
 	if row, ok := result.(map[string]any); ok {
 		if fmt.Sprint(row["state"]) == "error" {
-			b.logf("会话启动失败：%v", row["error"])
+			detail := fmt.Sprint(row["error"])
+			if reason := fmt.Sprint(row["reason"]); reason != "" && reason != "<nil>" {
+				detail += "；原因: " + reason
+			}
+			b.logf("会话启动失败：%s（%s）", detail, ctxInfo)
 		} else {
-			b.logf("会话已创建：%v", row["state"])
+			b.logf("会话已创建：%v（%s）", row["state"], ctxInfo)
 		}
 	}
 	return result, nil

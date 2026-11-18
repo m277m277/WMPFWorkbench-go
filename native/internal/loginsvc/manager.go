@@ -5,8 +5,6 @@ package loginsvc
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,16 +96,11 @@ func (m *Manager) settings() (settings, error) {
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" {
 		return s, errors.New("登录服务地址必须是本机 http://127.0.0.1")
 	}
-	s.Token = config.String(values, "login_token")
-	if s.Token == "" {
-		var raw [32]byte
-		if _, err = rand.Read(raw[:]); err != nil {
-			return s, err
-		}
-		s.Token = base64.RawURLEncoding.EncodeToString(raw[:])
-		if _, err = m.Config.Update(context.Background(), map[string]any{"login_token": s.Token}); err != nil {
-			return s, err
-		}
+	// Use the shared, lock-protected generator so account.Client and this
+	// service cannot mint different tokens on a fresh config.
+	s.Token, err = m.Config.EnsureToken(context.Background(), "login_token")
+	if err != nil {
+		return s, err
 	}
 	return s, nil
 }

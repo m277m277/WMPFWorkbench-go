@@ -144,6 +144,20 @@ func TestValidateRuntimeRejectsDifferentBytes(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeMissingGivesActionableError(t *testing.T) {
+	p := t.TempDir()
+	err := ValidateRuntime(context.Background(), p)
+	if err == nil {
+		t.Fatal("empty runtime dir must be rejected before launch")
+	}
+	msg := err.Error()
+	for _, want := range []string{"flue.dll", "WeChatAppEx.exe", "应用宝", "runtime\\5.10.7300.414"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing actionable detail %q in: %s", want, msg)
+		}
+	}
+}
+
 func TestSetupAloneDoesNotClaimDebugReady(t *testing.T) {
 	m := fixtureManager(t)
 	ctx, cancel := context.WithCancel(context.Background())

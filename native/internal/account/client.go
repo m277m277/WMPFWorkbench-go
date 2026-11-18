@@ -3,8 +3,6 @@ package account
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,19 +46,11 @@ func (c *Client) base(values config.Values) (string, string, error) {
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" {
 		return "", "", errors.New("登录服务地址必须是本机 http://127.0.0.1")
 	}
-	token := config.String(values, "login_token")
-	if token == "" {
-		// A fresh default config leaves login_token blank. Mint it here with the
-		// same shape loginsvc uses and persist it, so the account list works even
-		// if this read races the GUI's asynchronous Ensure on startup.
-		var raw [32]byte
-		if _, randErr := rand.Read(raw[:]); randErr != nil {
-			return "", "", randErr
-		}
-		token = base64.RawURLEncoding.EncodeToString(raw[:])
-		if _, updateErr := c.Config.Update(context.Background(), map[string]any{"login_token": token}); updateErr != nil {
-			return "", "", updateErr
-		}
+	// Use the shared, lock-protected generator so the token cannot diverge from
+	// the one the login service mints at startup (which caused 401s on first run).
+	token, err := c.Config.EnsureToken(context.Background(), "login_token")
+	if err != nil {
+		return "", "", err
 	}
 	return base, token, nil
 }
