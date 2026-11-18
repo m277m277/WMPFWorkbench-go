@@ -20,6 +20,7 @@ func Defaults() Values {
 	return Values{
 		"disabled_tools": []string{}, "selected_account": "", "login_url": "", "login_token": "",
 		"mcp_port": 18767, "login_port": 18766, "mcp_token": "", "mcp_enabled": true,
+		"mcp_bind": "127.0.0.1",
 		"auth_mode": "managed", "auto_start": true, "hide_miniapp_window": false, "tool_catalog_version": 3,
 	}
 }

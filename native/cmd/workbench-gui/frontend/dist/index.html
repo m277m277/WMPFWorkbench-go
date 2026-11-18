@@ -160,7 +160,15 @@ progress::-webkit-progress-value{background:var(--accent)}
           <div class="row">
             <span class="muted">登录端口</span><input id="loginPort" type="number" style="width:84px">
             <span class="muted">MCP 端口</span><input id="mcpPort" type="number" style="width:84px">
-            <button id="savePorts">保存端口</button>
+            <button id="savePorts">保存设置</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <span class="muted">MCP 监听</span>
+            <select id="mcpBind">
+              <option value="127.0.0.1">127.0.0.1（仅本机）</option>
+              <option value="0.0.0.0">0.0.0.0（允许局域网）</option>
+            </select>
+            <span class="muted small">保存后自动重启 MCP 服务；0.0.0.0 会暴露到局域网，请确保 mcp_token 有效</span>
           </div>
           <div class="row" style="margin-top:8px">
             <button id="copyStdio">复制 stdio 配置</button>
@@ -268,7 +276,7 @@ progress::-webkit-progress-value{background:var(--accent)}
           <div class="row" style="gap:18px;align-items:flex-start">
             <div class="qrBox" id="aboutLogo" style="width:64px;height:64px;margin:0;flex:none"></div>
             <div class="grow">
-              <div class="row" style="gap:8px"><span class="aboutName">小程序工作台</span><span class="pill" id="versionPill">v1.0.1</span></div>
+              <div class="row" style="gap:8px"><span class="aboutName">小程序工作台</span><span class="pill" id="versionPill">v1.0.2</span></div>
               <div class="aboutMeta">开发者  Huo</div>
               <div class="aboutMeta">公众号  荧惑安全</div>
               <div class="aboutMeta">登录、独立启动、CDP 调试与离线解密的一体化工作台。</div>
@@ -540,6 +548,7 @@ async function refresh(silent) {
     metrics(login || {}, config || {}, mcp || {});
     if (document.activeElement !== $('loginPort')) $('loginPort').value = config.login_port || '';
     if (document.activeElement !== $('mcpPort')) $('mcpPort').value = config.mcp_port || '';
+    $('mcpBind').value = config.mcp_bind || '127.0.0.1';
     $('globalSwitch').checked = config.mcp_enabled !== false;
     $('hideWindow').checked = !!config.hide_miniapp_window;
   } catch (error) {
@@ -694,14 +703,15 @@ $('svcStop').addEventListener('click', async () => {
   refresh(true);
 });
 $('savePorts').addEventListener('click', async () => {
-  status('正在保存端口…', 'busy');
+  status('正在保存设置…', 'busy');
   try {
-    const saved = await api.SavePorts(Number($('loginPort').value), Number($('mcpPort').value));
-    logAppend('端口已保存：登录 ' + saved.login_port + ' / MCP ' + saved.mcp_port);
-    status('端口已保存：登录 ' + saved.login_port + ' / MCP ' + saved.mcp_port, 'ok');
+    const bind = $('mcpBind').value;
+    const saved = await api.SavePorts(Number($('loginPort').value), Number($('mcpPort').value), bind);
+    logAppend('设置已保存：登录 ' + saved.login_port + ' / MCP ' + saved.mcp_port + '（监听 ' + bind + '）');
+    status('已保存：MCP 监听 ' + bind + '，服务已自动重启', 'ok');
   } catch (error) {
-    logAppend('保存端口失败：' + error);
-    status('保存端口失败：' + error, 'bad');
+    logAppend('保存设置失败：' + error);
+    status('保存设置失败：' + error, 'bad');
   }
 });
 $('copyStdio').addEventListener('click', async () => {

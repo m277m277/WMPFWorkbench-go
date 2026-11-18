@@ -38,15 +38,18 @@ var assets embed.FS
 //go:embed assets/app_icon.jpg
 var iconData []byte
 
-const appVersion = "1.0.1"
+const appVersion = "1.0.2"
 
 type Backend struct {
-	ctx      context.Context
-	svc      *core.Service
-	cfgPath  string
-	mu       sync.Mutex
-	logs     []string
-	mcpError string
+	ctx       context.Context
+	svc       *core.Service
+	cfgPath   string
+	mu        sync.Mutex
+	logs      []string
+	mcpError  string
+	mcpCancel context.CancelFunc
+	mcpDone   chan struct{}
+	skipMCP   bool // tests set this to avoid launching a real listener
 }
 
 func (b *Backend) Startup(ctx context.Context) {
@@ -54,15 +57,7 @@ func (b *Backend) Startup(ctx context.Context) {
 	// The HTTP MCP endpoint in the clipboard config must actually listen, or
 	// clients report "fetch failed"; the GUI therefore owns its lifecycle.
 	if values, err := b.svc.Config.Read(); err == nil && values["mcp_enabled"] != false {
-		go func() {
-			if err := runMCP(b.svc.Paths.Root, "http", 0, b.cfgPath); err != nil {
-				b.setMCPError(err.Error())
-				b.logf("MCP HTTP 服务未启动：%v（若端口被占用，说明已有实例在运行）", err)
-				return
-			}
-			b.setMCPError("")
-			b.logf("MCP HTTP 服务已退出")
-		}()
+		b.startMCP()
 	}
 	go func() {
 		status, err := b.svc.LoginSvc.Ensure(ctx)
@@ -80,9 +75,13 @@ func (b *Backend) MCPStatus() map[string]any {
 	values, err := b.svc.Config.Read()
 	port := 0
 	enabled := true
+	bind := "127.0.0.1"
 	if err == nil {
 		port = config.Int(values, "mcp_port")
 		enabled = values["mcp_enabled"] != false
+		if v := config.String(values, "mcp_bind"); v != "" {
+			bind = v
+		}
 	}
 	if port < 1 || port > 65535 {
 		port = 18767
@@ -95,7 +94,7 @@ func (b *Backend) MCPStatus() map[string]any {
 	b.mu.Lock()
 	mcpError := b.mcpError
 	b.mu.Unlock()
-	out := map[string]any{"running": running, "enabled": enabled, "port": port, "url": fmt.Sprintf("http://127.0.0.1:%d/mcp", port)}
+	out := map[string]any{"running": running, "enabled": enabled, "port": port, "bind": bind, "url": fmt.Sprintf("http://127.0.0.1:%d/mcp", port)}
 	if !running && mcpError != "" {
 		out["error"] = mcpError
 	}
@@ -106,6 +105,52 @@ func (b *Backend) setMCPError(text string) {
 	b.mu.Lock()
 	b.mcpError = text
 	b.mu.Unlock()
+}
+
+// startMCP launches the in-process HTTP MCP server with a cancelable context.
+func (b *Backend) startMCP() {
+	if b.skipMCP {
+		return
+	}
+	ctx, cancel := context.WithCancel(b.ctx)
+	done := make(chan struct{})
+	b.mu.Lock()
+	b.mcpCancel = cancel
+	b.mcpDone = done
+	b.mu.Unlock()
+	go func() {
+		defer close(done)
+		if err := runMCPWithContext(ctx, b.svc.Paths.Root, "http", 0, b.cfgPath); err != nil {
+			if ctx.Err() == nil {
+				b.setMCPError(err.Error())
+				b.logf("MCP HTTP 服务未启动：%v", err)
+			}
+			return
+		}
+		if ctx.Err() == nil {
+			b.setMCPError("")
+			b.logf("MCP HTTP 服务已退出")
+		}
+	}()
+}
+
+// stopMCP cancels the running listener and waits for it to release the port.
+func (b *Backend) stopMCP() {
+	b.mu.Lock()
+	cancel, done := b.mcpCancel, b.mcpDone
+	b.mcpCancel, b.mcpDone = nil, nil
+	b.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			b.logf("MCP HTTP 服务停止超时")
+		}
+	}
 }
 
 var (
@@ -175,18 +220,29 @@ func (b *Backend) Config() map[string]any {
 	login, _ := values["login_port"].(float64)
 	mcpPort, _ := values["mcp_port"].(float64)
 	selected, _ := values["selected_account"].(string)
+	bind, _ := values["mcp_bind"].(string)
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
 	return map[string]any{
 		"hide_miniapp_window": hide,
 		"mcp_enabled":         enabled,
 		"login_port":          int(login),
 		"mcp_port":            int(mcpPort),
+		"mcp_bind":            bind,
 		"selected_account":    selected,
 	}
 }
 
-func (b *Backend) SavePorts(loginPort, mcpPort int) (map[string]any, error) {
+func (b *Backend) SavePorts(loginPort, mcpPort int, bind string) (map[string]any, error) {
 	if loginPort < 1024 || loginPort > 65535 || mcpPort < 1024 || mcpPort > 65535 {
 		return nil, fmt.Errorf("端口范围应为 1024–65535")
+	}
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	if bind != "127.0.0.1" && bind != "0.0.0.0" {
+		return nil, fmt.Errorf("MCP 监听地址只能是 127.0.0.1 或 0.0.0.0")
 	}
 	// Stop with the old settings first: after the update the URL points at the
 	// new port and the old service would no longer be reachable.
@@ -195,16 +251,23 @@ func (b *Backend) SavePorts(loginPort, mcpPort int) (map[string]any, error) {
 		b.svc.LoginSvc.Stop(b.ctx)
 		b.logf("登录服务已停止，准备应用新端口")
 	}
-	if _, err := b.svc.Config.Update(b.ctx, map[string]any{"login_port": float64(loginPort), "mcp_port": float64(mcpPort)}); err != nil {
+	if _, err := b.svc.Config.Update(b.ctx, map[string]any{"login_port": float64(loginPort), "mcp_port": float64(mcpPort), "mcp_bind": bind}); err != nil {
 		return nil, err
 	}
-	b.logf("端口已保存：登录 %d / MCP %d", loginPort, mcpPort)
+	b.logf("设置已保存：登录 %d / MCP %d（监听 %s）", loginPort, mcpPort, bind)
 	if status.Running {
 		if _, err := b.svc.LoginSvc.Ensure(b.ctx); err != nil {
 			b.logf("登录服务按新端口重启失败：%v", err)
 			return b.Config(), nil
 		}
 		b.logf("登录服务已按新端口重启")
+	}
+	// Apply the new MCP port/bind immediately instead of requiring a GUI restart.
+	values, _ := b.svc.Config.Read()
+	if values["mcp_enabled"] != false {
+		b.stopMCP()
+		b.startMCP()
+		b.logf("MCP HTTP 服务已按新设置重启")
 	}
 	return b.Config(), nil
 }

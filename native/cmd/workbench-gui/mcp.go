@@ -25,6 +25,14 @@ import (
 // started by the MCP client (it owns the pipes), but it can live in this single
 // executable because the SDK only needs stdin/stdout.
 func runMCP(root, transport string, port int, cfgPath string) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return runMCPWithContext(ctx, root, transport, port, cfgPath)
+}
+
+// runMCPWithContext is the cancelable form used by the GUI so a settings change
+// (e.g. mcp_bind) can stop the old listener and start a new one in-process.
+func runMCPWithContext(ctx context.Context, root, transport string, port int, cfgPath string) error {
 	p, err := app.Resolve(root)
 	if err != nil {
 		return err
@@ -43,8 +51,6 @@ func runMCP(root, transport string, port int, cfgPath string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	switch transport {
 	case "stdio":
 		return server.Run(ctx, &mcp.StdioTransport{})
@@ -58,6 +64,13 @@ func runMCP(root, transport string, port int, cfgPath string) error {
 		}
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("invalid port")
+		}
+		bind := config.String(values, "mcp_bind")
+		if bind == "" {
+			bind = "127.0.0.1"
+		}
+		if bind != "127.0.0.1" && bind != "0.0.0.0" {
+			return fmt.Errorf("invalid mcp_bind: %s", bind)
 		}
 		token := config.String(values, "mcp_token")
 		if token == "" {
@@ -83,7 +96,7 @@ func runMCP(root, transport string, port int, cfgPath string) error {
 		if err != nil {
 			return err
 		}
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		listener, err := mcpListen(bind, port)
 		if err != nil {
 			return err
 		}
@@ -104,4 +117,20 @@ func runMCP(root, transport string, port int, cfgPath string) error {
 		return nil
 	}
 	return fmt.Errorf("transport must be stdio or http")
+}
+
+// mcpListen is the single place that turns the configured bind address into a
+// listener. Kept separate so a test can prove 127.0.0.1 vs 0.0.0.0 actually
+// changes which interfaces accept connections.
+func mcpListen(bind string, port int) (net.Listener, error) {
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	if bind != "127.0.0.1" && bind != "0.0.0.0" {
+		return nil, fmt.Errorf("invalid mcp_bind: %s", bind)
+	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid port")
+	}
+	return net.Listen("tcp", fmt.Sprintf("%s:%d", bind, port))
 }

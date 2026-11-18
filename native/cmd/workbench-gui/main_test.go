@@ -19,7 +19,7 @@ func fixtureBackend(t *testing.T) *Backend {
 	}
 	svc := core.New(p)
 	t.Cleanup(svc.Close)
-	return &Backend{ctx: context.Background(), svc: svc}
+	return &Backend{ctx: context.Background(), svc: svc, skipMCP: true}
 }
 
 // The GUI must expose the same frozen 16 tools and persist toggles through the
@@ -75,15 +75,24 @@ func TestSearchEmptyKeywordDoesNotHitNetwork(t *testing.T) {
 // running service is restarted by the caller path, not silently left stale.
 func TestSavePortsPersistsConfig(t *testing.T) {
 	b := fixtureBackend(t)
-	out, err := b.SavePorts(18770, 18771)
+	out, err := b.SavePorts(18770, 18771, "0.0.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out["login_port"] != 18770 || out["mcp_port"] != 18771 {
 		t.Fatal("ports not persisted", out)
 	}
-	if _, err = b.SavePorts(80, 18771); err == nil {
+	if cfg := b.Config(); cfg["mcp_bind"] != "0.0.0.0" {
+		t.Fatal("mcp_bind not persisted", cfg)
+	}
+	if _, err = b.SavePorts(80, 18771, "127.0.0.1"); err == nil {
 		t.Fatal("out-of-range port must be rejected")
+	}
+	if _, err = b.SavePorts(18770, 18771, "1.2.3.4"); err == nil {
+		t.Fatal("invalid mcp_bind must be rejected")
+	}
+	if _, err = b.SavePorts(18770, 18771, ""); err != nil {
+		t.Fatal("empty mcp_bind should default to loopback", err)
 	}
 }
 
